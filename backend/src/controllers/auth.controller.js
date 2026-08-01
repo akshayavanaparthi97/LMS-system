@@ -33,6 +33,45 @@ const DEMO_USERS = {
 
 const getDemoUser = (email) => DEMO_USERS[email?.toLowerCase?.()];
 
+// The admin login page advertises these credentials. Persist the account before
+// issuing a token so every protected route can resolve the JWT subject.
+const resolveDemoUser = async (email, password) => {
+  const demoUser = getDemoUser(email);
+
+  if (!demoUser) return null;
+  if (password !== demoUser.password) {
+    return { invalidPassword: true };
+  }
+
+  try {
+    const existingUser = await prisma.user.findUnique({
+      where: { email: demoUser.email },
+    });
+
+    if (existingUser) return existingUser;
+
+    const hashedPassword = await bcrypt.hash(demoUser.password, 10);
+    return await prisma.user.create({
+      data: {
+        id: demoUser.id,
+        name: demoUser.name,
+        email: demoUser.email,
+        password: hashedPassword,
+        role: demoUser.role,
+        status: demoUser.status,
+      },
+    });
+  } catch (error) {
+    // Keep the documented fallback available when the database is unavailable.
+    // With a connected database, the account is always persisted above.
+    if (error.code === 'P2002') {
+      return prisma.user.findUnique({ where: { email: demoUser.email } });
+    }
+    if (error.code === 'ECONNREFUSED') return demoUser;
+    throw error;
+  }
+};
+
 const buildAuthResponse = (user) => ({
   success: true,
   token: generateToken(user.id, user.role),
@@ -101,10 +140,10 @@ exports.login = async (req, res, next) => {
     }
 
     const normalizedEmail = email.toLowerCase();
-    const demoUser = getDemoUser(normalizedEmail);
+    const demoUser = await resolveDemoUser(normalizedEmail, password);
 
     if (demoUser) {
-      if (password !== demoUser.password) {
+      if (demoUser.invalidPassword) {
         return res.status(401).json({ success: false, error: 'Invalid credentials' });
       }
       return res.status(200).json(buildAuthResponse(demoUser));
